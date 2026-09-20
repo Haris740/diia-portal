@@ -1,0 +1,135 @@
+import dbConnect from "@/lib/mongodb";
+import Complaint from "@/models/complaintModel";
+import Attendance from "@/models/attendanceModel";
+import Student from "@/models/studentsModel";
+import Teacher from "@/models/teachersModel";
+import AcademicYear from "@/models/academicYearModel";
+import { NextResponse } from "next/server";
+import mongoose from "mongoose";
+import { getActiveAcademicYearId } from "@/lib/getActiveAcademicYear";
+
+export async function GET(req) {
+    await dbConnect();
+    const { searchParams } = new URL(req.url);
+    const studentId = searchParams.get('studentId');
+    const teacherId = searchParams.get('teacherId');
+    const ad = searchParams.get('ad');
+
+    try {
+        let query = {};
+        
+        if (studentId) {
+            if (mongoose.Types.ObjectId.isValid(studentId)) {
+                query.studentId = studentId;
+            } else {
+                return NextResponse.json({ error: "Invalid studentId format" }, { status: 400 });
+            }
+        }
+        
+        if (teacherId) {
+            if (mongoose.Types.ObjectId.isValid(teacherId)) {
+                query.teacherId = teacherId;
+            } else {
+                return NextResponse.json({ error: "Invalid teacherId format" }, { status: 400 });
+            }
+        }
+        
+        const activeYearId = await getActiveAcademicYearId();
+        if (activeYearId && searchParams.get('all') !== 'true') {
+            query.academicYearId = activeYearId;
+        }
+
+        const complaints = await Complaint.find(query)
+            .populate('studentId')
+            .populate('attendanceId')
+            .populate('teacherId')
+            .sort({ createdAt: -1 });
+            
+        return NextResponse.json(complaints);
+    } catch (error) {
+        console.error("Complaints GET Error:", error);
+        return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+}
+
+import { protectMutation } from "@/utils/mutationGuard";
+
+export async function POST(req) {
+    const mutationBlocked = protectMutation(req);
+    if (mutationBlocked) return mutationBlocked;
+
+    await dbConnect();
+    try {
+        const body = await req.json();
+        const activeYearId = await getActiveAcademicYearId();
+        if (!body.academicYearId && activeYearId) {
+            body.academicYearId = activeYearId;
+        }
+        const complaint = await Complaint.create(body);
+        return NextResponse.json(complaint);
+    } catch (error) {
+        console.error("Complaints POST Error:", error);
+        return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+}
+
+export async function PATCH(req) {
+    const mutationBlocked = protectMutation(req);
+    if (mutationBlocked) return mutationBlocked;
+
+    await dbConnect();
+    try {
+        const { id, ...updates } = await req.json();
+        
+        // Find current complaint state
+        const complaint = await Complaint.findById(id);
+        if (!complaint) {
+            return NextResponse.json({ error: "Complaint not found" }, { status: 404 });
+        }
+
+        // Update complaint
+        const updatedComplaint = await Complaint.findByIdAndUpdate(id, updates, { new: true })
+            .populate('studentId')
+            .populate('attendanceId')
+            .populate('teacherId');
+
+        // Automated Correction: If status is set to 'Resolved', update the actual attendance record
+        if (updates.status === 'Resolved' && complaint.attendanceId) {
+            if (complaint.actualStatus === 'Present') {
+                await Attendance.findByIdAndUpdate(complaint.attendanceId, { 
+                    status: 'Present',
+                    onLeave: false 
+                });
+            } else if (complaint.actualStatus === 'Leave' || complaint.actualStatus === 'CEP') {
+                // If resolving as leave or CEP, we mark onLeave as true and keep status as 'Absent'
+                await Attendance.findByIdAndUpdate(complaint.attendanceId, { 
+                    onLeave: true,
+                    status: 'Absent' 
+                });
+            }
+        }
+
+        return NextResponse.json(updatedComplaint);
+    } catch (error) {
+        return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+}
+
+export async function DELETE(req) {
+    const mutationBlocked = protectMutation(req);
+    if (mutationBlocked) return mutationBlocked;
+
+    await dbConnect();
+    const { searchParams } = new URL(req.url);
+    const id = searchParams.get('id');
+
+    try {
+        if (!id) {
+            return NextResponse.json({ error: "Complaint ID is required" }, { status: 400 });
+        }
+        await Complaint.findByIdAndDelete(id);
+        return NextResponse.json({ success: true, message: "Complaint removed" });
+    } catch (error) {
+        return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+}

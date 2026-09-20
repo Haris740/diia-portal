@@ -1,0 +1,259 @@
+import dbConnect from "@/lib/mongodb";
+import Points from "@/models/pointsModel";
+import Student from "@/models/studentsModel";
+import Teacher from "@/models/teachersModel";
+import MentorMentee from "@/models/mentorMenteeModel";
+import { NextResponse } from "next/server";
+import { getActiveAcademicYearId } from "@/lib/getActiveAcademicYear";
+
+import { protectMutation } from "@/utils/mutationGuard";
+
+export async function POST(req) {
+    const mutationBlocked = protectMutation(req);
+    if (mutationBlocked) return mutationBlocked;
+
+    await dbConnect();
+    try {
+        const body = await req.json();
+        const activeYearId = await getActiveAcademicYearId();
+        if (!body.academicYearId && activeYearId) {
+            body.academicYearId = activeYearId;
+        }
+
+        // Check for duplicate proof image submissions
+        const { imageUrl } = body;
+        if (imageUrl) {
+            const duplicateImage = await Points.findOne({ imageUrl });
+            if (duplicateImage) {
+                return NextResponse.json(
+                    { error: "This work is already submitted by you or you are copying from someone else." },
+                    { status: 400 }
+                );
+            }
+        }
+
+        // Limit for Works category: max 20 times for a single activity
+        const { studentId, category, activity } = body;
+        if (category === 'Works') {
+            const count = await Points.countDocuments({
+                studentId,
+                category: 'Works',
+                activity,
+                status: { $ne: 'rejected' }
+            });
+            if (count >= 20) {
+                return NextResponse.json(
+                    { error: `You have reached the limit of 20 applications for the activity "${activity}" in the Works category.` },
+                    { status: 400 }
+                );
+            }
+        }
+
+        // body should contain studentId, mentorId, activity, category, points, academicYearId
+        const newPoint = await Points.create(body);
+        return NextResponse.json(newPoint);
+    } catch (error) {
+        return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+}
+
+export async function GET(req) {
+    await dbConnect();
+    const { searchParams } = new URL(req.url);
+    const studentId = searchParams.get('studentId');
+    const mentorId = searchParams.get('mentorId');
+    const activeYearId = await getActiveAcademicYearId();
+
+    const rankStudentId = searchParams.get('rankStudentId');
+    if (rankStudentId) {
+        try {
+            const matchStage = { status: 'approved' };
+            if (searchParams.get('session') === 'true' && searchParams.get('all') !== 'true' && activeYearId) {
+                matchStage.academicYearId = activeYearId;
+            }
+
+            const rankings = await Points.aggregate([
+                { $match: matchStage },
+                {
+                    $group: {
+                        _id: '$studentId',
+                        totalPoints: { $sum: '$points' }
+                    }
+                },
+                { $sort: { totalPoints: -1 } }
+            ]);
+
+            const index = rankings.findIndex(r => r._id.toString() === rankStudentId);
+            const rank = index === -1 ? '-' : index + 1;
+
+            return NextResponse.json({ rank });
+        } catch (error) {
+            return NextResponse.json({ error: error.message }, { status: 500 });
+        }
+    }
+
+    try {
+        let query = {};
+        if (studentId) {
+            if (studentId.includes(',')) {
+                query.studentId = { $in: studentId.split(',').map(s => s.trim()).filter(Boolean) };
+            } else {
+                query.studentId = studentId;
+            }
+        }
+        if (mentorId) {
+            if (searchParams.get('includeMentees') === 'true') {
+                const relations = await MentorMentee.find({ mentorId, isActive: true }).select('menteeId');
+                const menteeIds = relations.map(r => r.menteeId).filter(Boolean);
+                query.$or = [
+                    { mentorId: mentorId },
+                    { studentId: { $in: menteeIds } }
+                ];
+            } else {
+                query.mentorId = mentorId;
+            }
+        }
+
+        const status = searchParams.get('status');
+        if (status) query.status = status;
+
+        const activities = searchParams.get('activities');
+        if (activities) {
+            query.activity = { $in: activities.split(',') };
+        }
+
+        if (searchParams.get('session') === 'true' && searchParams.get('all') !== 'true' && activeYearId) {
+            query.academicYearId = activeYearId;
+        }
+
+        if (searchParams.get('leaderboard')) {
+            const leaderboardMatch = { status: 'approved' };
+            if (searchParams.get('session') === 'true' && searchParams.get('all') !== 'true' && activeYearId) {
+                leaderboardMatch.academicYearId = activeYearId;
+            }
+
+            const leaderboard = await Points.aggregate([
+                { $match: leaderboardMatch },
+                {
+                    $group: {
+                        _id: '$studentId',
+                        totalPoints: { $sum: '$points' },
+                        achievementCount: { $sum: 1 }
+                    }
+                },
+                {
+                    $lookup: {
+                        from: 'students',
+                        localField: '_id',
+                        foreignField: '_id',
+                        as: 'student'
+                    }
+                },
+                { $unwind: '$student' },
+                {
+                    $lookup: {
+                        from: 'mentormentees',
+                        localField: '_id',
+                        foreignField: 'menteeId',
+                        as: 'mentorRelation'
+                    }
+                },
+                {
+                    $unwind: {
+                        path: '$mentorRelation',
+                        preserveNullAndEmptyArrays: true
+                    }
+                },
+                {
+                    $lookup: {
+                        from: 'teachers',
+                        localField: 'mentorRelation.mentorId',
+                        foreignField: '_id',
+                        as: 'mentor'
+                    }
+                },
+                {
+                    $unwind: {
+                        path: '$mentor',
+                        preserveNullAndEmptyArrays: true
+                    }
+                },
+                {
+                    $addFields: {
+                        mentorName: '$mentor.name'
+                    }
+                },
+                { $sort: { totalPoints: -1 } }
+            ]);
+            return NextResponse.json(leaderboard);
+        }
+
+        const points = await Points.find(query)
+            .populate('studentId', { "SHORT NAME": 1, "FULL NAME": 1, "ADNO": 1, "CLASS": 1 })
+            .populate('mentorId', 'name')
+            .sort({ createdAt: -1 });
+
+        return NextResponse.json(points);
+    } catch (error) {
+        return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+}
+export async function PUT(req) {
+    const mutationBlocked = protectMutation(req);
+    if (mutationBlocked) return mutationBlocked;
+
+    await dbConnect();
+    try {
+        const body = await req.json();
+        const { id, ...updateData } = body;
+
+        if (!id) return NextResponse.json({ error: "Missing ID" }, { status: 400 });
+
+        // Ensure imageUrl is in schema (Next.js dev mode fix)
+        if (!Points.schema.path('imageUrl')) {
+            Points.schema.add({ imageUrl: { type: String, default: null } });
+        }
+
+        // Filter out undefined values
+        const cleanUpdate = {};
+        Object.keys(updateData).forEach(key => {
+            if (updateData[key] !== undefined) {
+                cleanUpdate[key] = updateData[key];
+            }
+        });
+
+        console.log("Updating point record:", id, cleanUpdate);
+
+        const updatedPoint = await Points.findByIdAndUpdate(
+            id,
+            { $set: cleanUpdate },
+            { new: true }
+        );
+
+        if (!updatedPoint) return NextResponse.json({ error: "Record not found" }, { status: 404 });
+
+        return NextResponse.json(updatedPoint);
+    } catch (error) {
+        console.error("Update error:", error);
+        return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+}
+
+export async function DELETE(req) {
+    const mutationBlocked = protectMutation(req);
+    if (mutationBlocked) return mutationBlocked;
+
+    await dbConnect();
+    const { searchParams } = new URL(req.url);
+    const id = searchParams.get('id');
+
+    if (!id) return NextResponse.json({ error: "Missing ID" }, { status: 400 });
+
+    try {
+        const deletedPoint = await Points.findByIdAndDelete(id);
+        if (!deletedPoint) return NextResponse.json({ error: "Record not found" }, { status: 404 });
+        return NextResponse.json({ success: true });
+    } catch (error) {
+        return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+}

@@ -1,0 +1,796 @@
+"use client";
+
+import React, { useState, useEffect } from 'react';
+import Header from '@/components/Header/Header';
+import axios from 'axios';
+import { ShieldCheck, Loader2, AlertTriangle, CheckCircle2, ChevronRight, Image as ImageIcon, Calendar, X } from 'lucide-react';
+import { useRouter } from 'next/navigation';
+
+const ALLOWED_EMAILS = [
+    'shahinpandikkad4@gmail.com',
+    'dkp17713@gmail.com',
+    'unaisnellikkuth@gmail.com',
+    'kthaseeb11@gmail.com',
+    'saheedchunku@gmail.com'
+];
+
+const MONTHS_LIST = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'
+];
+
+export default function AdminReviewClassReports() {
+    const router = useRouter();
+    const [admin, setAdmin] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const [reports, setReports] = useState([]);
+    const [selectedReport, setSelectedReport] = useState(null);
+    const [showPrograms, setShowPrograms] = useState(false);
+    const [submittingId, setSubmittingId] = useState(null);
+
+    // State to keep track of marks being entered before saving
+    // Structure: { [reportId]: { [programId]: number } }
+    const [marks, setMarks] = useState({});
+    const [vivaPoints, setVivaPoints] = useState({});
+    const [tier2PointsGlobal, setTier2PointsGlobal] = useState({});
+    const [rejectedPrograms, setRejectedPrograms] = useState({});
+
+    const [defaultMonth, setDefaultMonth] = useState('January');
+    const [defaultYear, setDefaultYear] = useState(new Date().getFullYear());
+    const [savingPeriod, setSavingPeriod] = useState(false);
+    
+    const [deadlineDate, setDeadlineDate] = useState('');
+    const [deadlineTime, setDeadlineTime] = useState('');
+    const [savingDeadline, setSavingDeadline] = useState(false);
+    
+    const [selectedFilterMonth, setSelectedFilterMonth] = useState('All');
+
+    useEffect(() => {
+        const storedTeacher = localStorage.getItem('teacher');
+        if (storedTeacher) {
+            const parsed = JSON.parse(storedTeacher);
+            const email = (parsed.email || parsed.EMAIL || '').trim().toLowerCase();
+            const roles = Array.isArray(parsed.role) ? parsed.role : [parsed.role];
+            if ((email && ALLOWED_EMAILS.includes(email)) || roles.includes('best_class_admin') || email === 'test@gmail.com') {
+                setAdmin(parsed);
+                fetchReports();
+                fetchDefaultPeriod();
+            } else {
+                setLoading(false);
+            }
+        } else {
+            setLoading(false);
+        }
+    }, []);
+
+    const fetchDefaultPeriod = async () => {
+        try {
+            const res = await axios.get('/api/settings');
+            if (res.data.defaultReportMonth) {
+                setDefaultMonth(res.data.defaultReportMonth);
+            } else {
+                setDefaultMonth(MONTHS_LIST[new Date().getMonth()]);
+            }
+            if (res.data.defaultReportYear) {
+                setDefaultYear(res.data.defaultReportYear);
+            } else {
+                setDefaultYear(new Date().getFullYear());
+            }
+            if (res.data.programReportDeadlineDate) {
+                setDeadlineDate(res.data.programReportDeadlineDate);
+            }
+            if (res.data.programReportDeadlineTime) {
+                setDeadlineTime(res.data.programReportDeadlineTime);
+            }
+        } catch (error) {
+            console.error("Error loading default period settings:", error);
+        }
+    };
+
+    const handleSaveDefaultPeriod = async () => {
+        setSavingPeriod(true);
+        try {
+            await axios.post('/api/settings', { key: 'defaultReportMonth', value: defaultMonth });
+            await axios.post('/api/settings', { key: 'defaultReportYear', value: defaultYear });
+            alert("Active submission period successfully updated!");
+        } catch (error) {
+            console.error("Error saving period settings:", error);
+            alert("Failed to save submission period settings.");
+        } finally {
+            setSavingPeriod(false);
+        }
+    };
+
+    const handleSaveDeadline = async () => {
+        setSavingDeadline(true);
+        try {
+            await axios.post('/api/settings', { key: 'programReportDeadlineDate', value: deadlineDate });
+            await axios.post('/api/settings', { key: 'programReportDeadlineTime', value: deadlineTime });
+            alert("Program report deadline successfully updated!");
+        } catch (error) {
+            console.error("Error saving deadline settings:", error);
+            alert("Failed to save deadline settings.");
+        } finally {
+            setSavingDeadline(false);
+        }
+    };
+
+    const fetchReports = async () => {
+        try {
+            const res = await axios.get('/api/class-reports?adminView=true');
+            setReports(res.data);
+
+            // Initialize marks, viva, and rejected state for reports
+            const initialMarks = {};
+            const initialViva = {};
+            const initialTier2 = {};
+            const initialRejected = {};
+            res.data.forEach(report => {
+                initialMarks[report._id] = {};
+                initialViva[report._id] = report.originalVivaPoints !== undefined ? report.originalVivaPoints : (report.vivaPoints || 0);
+                initialTier2[report._id] = report.tier2Points || 0;
+                initialRejected[report._id] = {};
+                report.programs.forEach(program => {
+                    initialMarks[report._id][program._id] = program.mark || 0;
+                    initialRejected[report._id][program._id] = program.rejected || false;
+                });
+            });
+            setMarks(initialMarks);
+            setVivaPoints(initialViva);
+            setTier2PointsGlobal(initialTier2);
+            setRejectedPrograms(initialRejected);
+        } catch (error) {
+            console.error("Error fetching reports:", error);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleMarkChange = (reportId, programId, value) => {
+        let numericVal = Number(value);
+        if (numericVal < 0) numericVal = 0;
+        if (numericVal > 10) numericVal = 10;
+        setMarks(prev => ({
+            ...prev,
+            [reportId]: {
+                ...prev[reportId],
+                [programId]: numericVal
+            }
+        }));
+    };
+
+    const handleRejectedToggle = (reportId, programId) => {
+        setRejectedPrograms(prev => {
+            const currentVal = !prev[reportId]?.[programId];
+            if (currentVal) {
+                // If rejecting, force mark to 0
+                setMarks(prevMarks => ({
+                    ...prevMarks,
+                    [reportId]: {
+                        ...prevMarks[reportId],
+                        [programId]: 0
+                    }
+                }));
+            }
+            return {
+                ...prev,
+                [reportId]: {
+                    ...prev[reportId],
+                    [programId]: currentVal
+                }
+            };
+        });
+    };
+
+    const handleSaveMarks = async (report) => {
+        if (!admin) return;
+
+        setSubmittingId(report._id);
+
+        // Prepare the programs array with updated marks and rejected status
+        const updatedPrograms = report.programs.map(p => ({
+            _id: p._id,
+            mark: marks[report._id]?.[p._id] || 0,
+            rejected: rejectedPrograms[report._id]?.[p._id] || false
+        }));
+
+        const adminId = admin._id || admin.id;
+
+        try {
+            const currentRawViva = vivaPoints[report._id] || 0;
+            const calculatedViva = parseFloat(((currentRawViva / 650) * 100).toFixed(2));
+
+            await axios.patch('/api/class-reports/review', {
+                reportId: report._id,
+                programs: updatedPrograms,
+                vivaPoints: calculatedViva,
+                originalVivaPoints: currentRawViva,
+                tier2Points: tier2PointsGlobal[report._id] || 0,
+                zehnuthPoints: report.zehnuthPoints || 0,
+                originalZehnuthPoints: report.originalZehnuthPoints || 0,
+                adminId
+            });
+
+            // Re-fetch to update UI
+            await fetchReports();
+            setSelectedReport(null);
+            alert("Report successfully reviewed and marked!");
+        } catch (error) {
+            console.error("Error saving marks:", error);
+            alert("Failed to save marks. Please try again.");
+        } finally {
+            setSubmittingId(null);
+        }
+    };
+
+    if (loading) {
+        return (
+            <div className="min-h-screen bg-slate-50 pb-20">
+                <Header />
+                <div className="max-w-5xl mx-auto px-4 sm:px-6 pt-24 space-y-6">
+                    {/* Header Skeleton */}
+                    <div className="bg-slate-200/50 rounded-[2.5rem] p-8 sm:p-10 h-48 animate-pulse shadow-sm"></div>
+
+                    {/* Reports List Skeleton */}
+                    <div className="space-y-4">
+                        {[1, 2, 3, 4].map((n) => (
+                            <div key={n} className="bg-white rounded-[2rem] border border-slate-100 shadow-sm p-6 flex flex-col md:flex-row md:items-center justify-between gap-4 animate-pulse">
+                                <div className="flex items-center gap-4">
+                                    <div className="w-12 h-12 rounded-2xl bg-slate-100"></div>
+                                    <div className="space-y-2">
+                                        <div className="h-5 w-40 bg-slate-100 rounded-lg"></div>
+                                        <div className="flex items-center gap-2">
+                                            <div className="h-4 w-16 bg-slate-100 rounded-lg"></div>
+                                            <div className="h-4 w-24 bg-slate-100 rounded-lg"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="flex items-center gap-6">
+                                    <div className="h-6 w-24 bg-slate-100 rounded-lg"></div>
+                                    <div className="w-8 h-8 rounded-full bg-slate-100"></div>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    if (!admin) {
+        return (
+            <div className="min-h-screen bg-slate-50 flex flex-col">
+                <Header />
+                <div className="flex-1 flex items-center justify-center p-6">
+                    <div className="text-center">
+                        <AlertTriangle className="w-12 h-12 text-rose-500 mx-auto mb-4" />
+                        <h2 className="text-xl font-black text-slate-800 uppercase tracking-tight">Access Denied</h2>
+                        <p className="text-slate-500 font-medium mt-2">You do not have administrative privileges for this page.</p>
+                        <button onClick={() => router.push('/')} className="mt-6 px-6 py-3 bg-slate-900 text-white rounded-xl text-xs font-bold uppercase tracking-widest">Return Home</button>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    const filteredReports = reports.filter(report =>
+        selectedFilterMonth === 'All' || report.month === selectedFilterMonth
+    );
+
+    return (
+        <div className="min-h-screen bg-slate-50 pb-20">
+            <Header />
+
+            <div className="max-w-5xl mx-auto px-4 sm:px-6 pt-24 space-y-6">
+
+                {/* Header Section */}
+                <div className="bg-slate-900 rounded-[2.5rem] p-8 sm:p-10 text-white relative overflow-hidden shadow-2xl">
+                    <div className="absolute top-0 right-0 w-64 h-64 bg-indigo-500/20 rounded-full blur-3xl -mr-20 -mt-20 pointer-events-none"></div>
+
+                    <div className="relative z-10">
+                        <div className="flex items-center gap-3 mb-4">
+                            <div className="p-3 bg-white/10 rounded-2xl backdrop-blur-sm">
+                                <ShieldCheck size={24} className="text-emerald-400" />
+                            </div>
+                            <div>
+                                {/* <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-1">Administrator Hub</p> */}
+                                <h1 className="text-2xl font-black uppercase italic tracking-tight text-white">Evaluate Class Reports</h1>
+                            </div>
+                        </div>
+                        <p className="text-slate-400 font-medium max-w-xl text-sm leading-relaxed">
+                            Evaluate submitted monthly programs and assign marks to class activities.
+                        </p>
+                    </div>
+                </div>
+
+                {/* Settings Bar */}
+                <div className="bg-white rounded-2xl p-3 sm:p-4 border border-slate-200 shadow-sm flex flex-col xl:flex-row gap-4 items-center justify-between">
+                    
+                    {/* Default Period */}
+                    <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 w-full xl:w-auto bg-slate-50/50 p-2 sm:p-2.5 rounded-xl border border-slate-100">
+                        <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-2 whitespace-nowrap">Active Period:</span>
+                        <div className="flex items-center gap-2 w-full sm:w-auto">
+                            <select
+                                value={defaultMonth}
+                                onChange={(e) => setDefaultMonth(e.target.value)}
+                                className="bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-bold text-slate-700 outline-none focus:border-indigo-500 transition-all flex-1 sm:w-28 text-center"
+                            >
+                                {MONTHS_LIST.map(m => (
+                                    <option key={m} value={m}>{m}</option>
+                                ))}
+                            </select>
+                            <input
+                                type="number"
+                                value={defaultYear}
+                                onChange={(e) => setDefaultYear(parseInt(e.target.value) || new Date().getFullYear())}
+                                className="bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-bold text-slate-700 outline-none focus:border-indigo-500 transition-all w-20 text-center"
+                                min="2020" max="2050"
+                            />
+                            <button
+                                onClick={handleSaveDefaultPeriod}
+                                disabled={savingPeriod}
+                                className="bg-slate-800 hover:bg-slate-900 text-white rounded-lg px-3 py-1.5 text-[10px] font-black uppercase tracking-wider transition-all disabled:opacity-50 flex items-center justify-center gap-1 shrink-0"
+                            >
+                                {savingPeriod ? <Loader2 size={12} className="animate-spin" /> : "Save"}
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* Deadline */}
+                    <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 w-full xl:w-auto bg-slate-50/50 p-2 sm:p-2.5 rounded-xl border border-slate-100">
+                        <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-2 whitespace-nowrap">Upload Deadline:</span>
+                        <div className="flex items-center gap-2 w-full sm:w-auto">
+                            <input
+                                type="date"
+                                value={deadlineDate}
+                                onChange={(e) => setDeadlineDate(e.target.value)}
+                                className="bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-bold text-slate-700 outline-none focus:border-indigo-500 transition-all flex-1 sm:w-36 text-center"
+                            />
+                            <input
+                                type="time"
+                                value={deadlineTime}
+                                onChange={(e) => setDeadlineTime(e.target.value)}
+                                className="bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-bold text-slate-700 outline-none focus:border-indigo-500 transition-all flex-1 sm:w-28 text-center"
+                            />
+                            <button
+                                onClick={handleSaveDeadline}
+                                disabled={savingDeadline}
+                                className="bg-slate-800 hover:bg-slate-900 text-white rounded-lg px-3 py-1.5 text-[10px] font-black uppercase tracking-wider transition-all disabled:opacity-50 flex items-center justify-center gap-1 shrink-0"
+                            >
+                                {savingDeadline ? <Loader2 size={12} className="animate-spin" /> : "Save"}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                {/* Filter and Reports List Section */}
+                <div className="flex items-center justify-between ">
+                    <h3 className="text-sm font-black text-slate-800 uppercase tracking-wider pl-1">Program Reports</h3>
+                    <select
+                        value={selectedFilterMonth}
+                        onChange={(e) => setSelectedFilterMonth(e.target.value)}
+                        className="bg-white border border-slate-200 rounded-xl px-4 py-2 text-xs font-bold text-slate-700 outline-none focus:border-indigo-500 transition-all cursor-pointer shadow-sm"
+                    >
+                        <option value="All">All Months</option>
+                        {MONTHS_LIST.map(m => (
+                            <option key={m} value={m}>{m}</option>
+                        ))}
+                    </select>
+                </div>
+
+
+
+                {/* Reports List */}
+                <div className="space-y-4">
+                    {filteredReports.length === 0 ? (
+                        <div className="bg-white rounded-[2rem] p-10 text-center shadow-sm border border-slate-100">
+                            <p className="text-slate-500 font-bold uppercase tracking-widest text-sm">No reports found</p>
+                        </div>
+                    ) : (
+                        filteredReports.map((report) => (
+                            <div key={report._id} className={`bg-white rounded-[2rem] border border-slate-100 shadow-sm overflow-hidden transition-all duration-300 hover:border-indigo-100 relative`}>
+                                {/* Card Header */}
+                                <div
+                                    className="p-6 cursor-pointer"
+                                    onClick={() => {
+                                        setSelectedReport(report);
+                                        setShowPrograms(report.status !== 'reviewed');
+                                    }}
+                                >
+                                    <div className="flex items-center gap-4 pr-28">
+                                        <div className={`w-12 h-12 rounded-2xl flex items-center justify-center font-black text-lg ${report.status === 'reviewed' ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'}`}>
+                                            C{report.classNumber}
+                                        </div>
+                                        <div>
+                                            <h3 className="text-lg font-black text-slate-800 uppercase italic">
+                                                {report.month} {report.year}
+                                            </h3>
+                                            <div className="flex items-center gap-2 mt-1">
+                                                <span className="text-[9px] font-black bg-slate-100 text-slate-600 px-2 py-0.5 rounded-lg uppercase tracking-widest">
+                                                    {report.section}
+                                                </span>
+                                                <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">
+                                                    C: {report.classNumber}
+                                                </span>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div className="absolute top-6 right-6 flex items-center gap-4">
+                                        <div className="text-right">
+                                            {report.status === 'reviewed' ? (
+                                                <div className="flex flex-col items-end">
+                                                    <span className="text-[10px] font-black text-emerald-500 flex items-center gap-1 uppercase tracking-widest bg-emerald-50 px-2 py-1 rounded-lg">
+                                                        <CheckCircle2 size={12} /> Reviewed
+                                                    </span>
+                                                    <span className="text-[9px] font-bold text-slate-400 mt-1 uppercase tracking-widest">
+                                                        By {report.markedBy?.name || 'Admin'}
+                                                    </span>
+                                                </div>
+                                            ) : (
+                                                <span className="text-[10px] font-black text-amber-500 uppercase tracking-widest bg-amber-50 px-2 py-1 rounded-lg">
+                                                    Pending Review
+                                                </span>
+                                            )}
+                                        </div>
+                                        <div className="w-8 h-8 rounded-full bg-slate-50 flex items-center justify-center text-slate-400">
+                                            <ChevronRight size={18} />
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        ))
+                    )}
+                </div>
+            </div>
+
+            {/* Popup Modal for Report Programs */}
+            {selectedReport && (
+                <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6">
+                    <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={() => setSelectedReport(null)}></div>
+                    <div className="relative w-full max-w-4xl max-h-[90vh] bg-white rounded-[2.5rem] shadow-2xl flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
+
+                        {/* Modal Header */}
+                        <div className="p-6 sm:p-8 border-b border-slate-100 bg-slate-50/50">
+                            <h3 className="text-2xl font-black text-slate-800 uppercase italic">
+                                {selectedReport.month} {selectedReport.year} Programs
+                            </h3>
+                            <div className="mt-2 flex items-center justify-between">
+                                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                                    <span className="bg-white px-2 py-1 rounded-lg border border-slate-200">Class: {selectedReport.classNumber}</span>
+                                    <span className="bg-white px-2 py-1 rounded-lg border border-slate-200">{selectedReport.section}</span>
+                                </p>
+                                <button
+                                    onClick={() => setSelectedReport(null)}
+                                    className="w-10 h-10 shrink-0 rounded-full bg-white border border-slate-200 flex items-center justify-center text-slate-400 hover:text-rose-500 hover:bg-rose-50 hover:border-rose-200 transition-colors"
+                                >
+                                    <X size={20} />
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* Modal Body */}
+                        <div className="flex-1 overflow-y-auto p-6 sm:p-8 bg-slate-50/50">
+                            
+                            <div className="flex justify-center mb-6">
+                                <button
+                                    onClick={() => setShowPrograms(!showPrograms)}
+                                    className="px-6 py-3 bg-indigo-50 text-indigo-600 rounded-xl text-xs font-black uppercase tracking-widest hover:bg-indigo-100 transition-colors border border-indigo-200"
+                                >
+                                    {showPrograms ? 'Hide Programs' : 'Show All Programs'}
+                                </button>
+                            </div>
+
+                            {showPrograms && (
+                                <div className="space-y-6">
+                                    {(() => {
+                                        const tier1Programs = (selectedReport.programs || []).filter(p => p.tier !== 'Tier 2');
+                                        const tier2Programs = (selectedReport.programs || []).filter(p => p.tier === 'Tier 2');
+                                        const sortedPrograms = [...tier1Programs, ...tier2Programs];
+
+                                        return sortedPrograms.map((program, idx) => {
+                                            const isRejected = rejectedPrograms[selectedReport._id]?.[program._id];
+                                            const isFirstTier1 = idx === 0 && program.tier !== 'Tier 2';
+                                            const isFirstTier2 = program.tier === 'Tier 2' && (idx === 0 || sortedPrograms[idx - 1]?.tier !== 'Tier 2');
+
+                                            return (
+                                                <React.Fragment key={program._id}>
+                                                    {isFirstTier1 && (
+                                                        <div className="flex items-center gap-3 pt-2 pb-1">
+                                                            <span className="px-3.5 py-1.5 bg-blue-50 text-blue-700 border border-blue-200 text-xs font-black uppercase tracking-widest rounded-xl shadow-sm">
+                                                                Tier 1 Programs ({tier1Programs.length})
+                                                            </span>
+                                                            <div className="h-px bg-slate-200 flex-1"></div>
+                                                        </div>
+                                                    )}
+                                                    {isFirstTier2 && (
+                                                        <div className="flex items-center gap-3 pt-6 pb-1">
+                                                            <span className="px-3.5 py-1.5 bg-indigo-50 text-indigo-700 border border-indigo-200 text-xs font-black uppercase tracking-widest rounded-xl shadow-sm">
+                                                                Tier 2 Programs ({tier2Programs.length})
+                                                            </span>
+                                                            <div className="h-px bg-slate-200 flex-1"></div>
+                                                        </div>
+                                                    )}
+                                                    <div key={program._id} className={`border rounded-[1.5rem] p-6 shadow-sm flex flex-col lg:flex-row gap-6 transition-all duration-300 ${isRejected ? 'border-rose-200 bg-rose-50/20 shadow-rose-50/5' : 'bg-white border-slate-200'
+                                                        }`}>
+
+                                            {/* Program Details */}
+                                            <div className="flex-1 space-y-4">
+                                                <div>
+                                                     <div className="flex flex-wrap items-center gap-2 mb-1">
+                                                         {program.tier && (
+                                                             <span className="text-[9px] font-black bg-blue-50 text-blue-700 px-2 py-1 rounded-md uppercase tracking-widest">
+                                                                 {program.tier}
+                                                             </span>
+                                                         )}
+                                                         <span className="text-[9px] font-black bg-indigo-50 text-indigo-600 px-2 py-1 rounded-md uppercase tracking-widest">
+                                                             {program.category}
+                                                         </span>
+                                                         {program.programType && <span className="text-[9px] font-black bg-amber-50 text-amber-800 px-2 py-1 rounded-md uppercase tracking-widest">
+                                                             {program.programType}
+                                                         </span>}
+                                                         {program.collaboration && (
+                                                             <span className="text-[9px] font-black bg-purple-50 text-purple-600 px-2 py-1 rounded-md uppercase tracking-widest border border-purple-100">
+                                                                 Collab: {program.collaboration}
+                                                             </span>
+                                                         )}
+                                                         {program.date && (
+                                                             <span className="text-[9px] font-black bg-slate-100 text-slate-500 px-2 py-1 rounded-md uppercase tracking-widest flex items-center gap-1">
+                                                                 <Calendar size={10} /> {program.date}
+                                                             </span>
+                                                         )}
+                                                         {isRejected && (
+                                                             <span className="text-[9px] font-black bg-rose-50 text-rose-600 px-2 py-1 rounded-md uppercase tracking-widest flex items-center gap-1 border border-rose-100 animate-pulse">
+                                                                 Rejected
+                                                             </span>
+                                                         )}
+                                                     </div>
+                                                     <h4 className="text-lg font-bold text-slate-800">{program.title}</h4>
+                                                 </div>
+
+                                                 {/* Description / Granular details */}
+                                                 <div className="bg-slate-50 border border-slate-150 p-4 rounded-2xl text-xs space-y-2 font-medium text-slate-600">
+                                                     {program.targetAudience && (
+                                                         <div className="flex justify-between border-b border-slate-200/50 pb-1">
+                                                             <span className="text-slate-400 font-bold uppercase tracking-tight text-[9px]">Target</span>
+                                                             <span className="text-right text-slate-700">{program.targetAudience}</span>
+                                                         </div>
+                                                     )}
+                                                     {program.venue && (
+                                                         <div className="flex justify-between border-b border-slate-200/50 pb-1">
+                                                             <span className="text-slate-400 font-bold uppercase tracking-tight text-[9px]">Venue</span>
+                                                             <span className="text-right text-slate-700">{program.venue}</span>
+                                                         </div>
+                                                     )}
+                                                     {program.guestName && (
+                                                         <div className="flex justify-between border-b border-slate-200/50 pb-1">
+                                                             <span className="text-slate-400 font-bold uppercase tracking-tight text-[9px]">Guest / Key Role</span>
+                                                             <span className="text-right text-slate-700">{program.guestName}</span>
+                                                         </div>
+                                                     )}
+                                                     {program.participantsCount !== undefined && program.participantsCount !== null && (
+                                                         <div className="flex justify-between border-b border-slate-200/50 pb-1">
+                                                             <span className="text-slate-400 font-bold uppercase tracking-tight text-[9px]">Participants</span>
+                                                             <span className="text-right text-slate-700">{program.participantsCount}</span>
+                                                         </div>
+                                                     )}
+                                                     {program.objectives ? (
+                                                         <div className="pt-1">
+                                                             <span className="text-slate-400 font-bold uppercase tracking-tight block text-[9px] mb-1">Objectives</span>
+                                                             <p className="text-xs font-semibold text-slate-700 leading-relaxed italic">“{program.objectives}”</p>
+                                                         </div>
+                                                     ) : (
+                                                         <p className="text-xs leading-relaxed whitespace-pre-line">{program.description}</p>
+                                                     )}
+                                                 </div>
+
+                                                {/* Media Section */}
+                                                {(program.poster || (program.gallery && program.gallery.length > 0)) && (
+                                                    <div className="pt-2">
+                                                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 flex items-center gap-1">
+                                                            <ImageIcon size={12} /> Attached Media
+                                                        </p>
+                                                        <div className="flex flex-wrap gap-3">
+                                                            {program.poster && (
+                                                                <a href={program.poster} target="_blank" rel="noopener noreferrer" className="relative w-20 h-20 rounded-xl overflow-hidden border-2 border-indigo-100 hover:border-indigo-400 transition-colors group">
+                                                                    <img src={program.poster} alt="Poster" className="w-full h-full object-cover" />
+                                                                    <div className="absolute inset-0 bg-black/50 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                                                                        <span className="text-[8px] font-bold text-white uppercase tracking-widest">Poster</span>
+                                                                    </div>
+                                                                </a>
+                                                            )}
+                                                            {(program.gallery || []).map((url, gIdx) => (
+                                                                <a key={gIdx} href={url} target="_blank" rel="noopener noreferrer" className="relative w-20 h-20 rounded-xl overflow-hidden border border-slate-200 hover:border-indigo-400 transition-colors group">
+                                                                    <img src={url} alt={`Gallery ${gIdx}`} className="w-full h-full object-cover" />
+                                                                    <div className="absolute inset-0 bg-black/50 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                                                                        <span className="text-[8px] font-bold text-white uppercase tracking-widest">Gallery</span>
+                                                                    </div>
+                                                                </a>
+                                                            ))}
+                                                        </div>
+                                                    </div>
+                                                )}
+                                            </div>
+
+                                            {/* Mark Input */}
+                                            {program.tier === 'Tier 2' ? (
+                                                <div className="lg:w-48 bg-slate-50 rounded-[1.5rem] p-5 flex flex-col justify-center border border-slate-100 shrink-0 text-center">
+                                                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">Tier 2 Program</p>
+                                                    <p className="text-xs font-semibold text-slate-500 mb-4">Marked collectively below.</p>
+                                                    <button
+                                                        onClick={() => handleRejectedToggle(selectedReport._id, program._id)}
+                                                        className={`w-full py-2 px-3 rounded-xl text-[9px] font-black uppercase tracking-wider transition-all border active:scale-95 ${isRejected
+                                                                ? 'bg-rose-50 text-rose-600 border-rose-200 hover:bg-rose-100'
+                                                                : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50 hover:text-rose-600 hover:border-rose-200'
+                                                            }`}
+                                                    >
+                                                        {isRejected ? 'Undo Reject' : 'Reject'}
+                                                    </button>
+                                                </div>
+                                            ) : (
+                                                <div className="lg:w-48 bg-slate-50 rounded-[1.5rem] p-5 flex flex-col justify-center border border-slate-100 shrink-0">
+                                                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest text-center mb-3">
+                                                        Assign Points
+                                                    </label>
+                                                    <div className="flex items-center justify-center gap-2">
+                                                        <button
+                                                            onClick={() => handleMarkChange(selectedReport._id, program._id, (marks[selectedReport._id]?.[program._id] || 0) - 1)}
+                                                            disabled={isRejected}
+                                                            className="w-8 h-8 rounded-full bg-white border border-slate-200 text-slate-500 flex items-center justify-center font-black hover:bg-slate-100 active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                                                        >
+                                                            -
+                                                        </button>
+                                                        <input
+                                                            type="number"
+                                                            min="0"
+                                                            max="10"
+                                                            value={marks[selectedReport._id]?.[program._id] || 0}
+                                                            disabled={isRejected}
+                                                            onChange={(e) => handleMarkChange(selectedReport._id, program._id, e.target.value)}
+                                                            className="w-16 text-center font-black text-xl text-slate-800 bg-transparent border-b-2 border-slate-300 focus:border-indigo-500 outline-none p-1 disabled:opacity-50 disabled:cursor-not-allowed"
+                                                        />
+                                                        <button
+                                                            onClick={() => handleMarkChange(selectedReport._id, program._id, (marks[selectedReport._id]?.[program._id] || 0) + 1)}
+                                                            disabled={isRejected}
+                                                            className="w-8 h-8 rounded-full bg-white border border-slate-200 text-slate-500 flex items-center justify-center font-black hover:bg-slate-100 active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                                                        >
+                                                            +
+                                                        </button>
+                                                    </div>
+    
+                                                    <button
+                                                        onClick={() => handleRejectedToggle(selectedReport._id, program._id)}
+                                                        className={`w-1/2 py-2 px-3 rounded-xl text-[9px] font-black uppercase tracking-wider transition-all border mt-4 active:scale-95 self-end ${isRejected
+                                                                ? 'bg-rose-50 text-rose-600 border-rose-200 hover:bg-rose-100'
+                                                                : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50 hover:text-rose-600 hover:border-rose-200'
+                                                            }`}
+                                                    >
+                                                        {isRejected ? 'Undo Reject' : 'Reject'}
+                                                    </button>
+                                                </div>
+                                            )}
+
+                                                    </div>
+                                                </React.Fragment>
+                                            );
+                                        });
+                                    })()}
+                                </div>
+                            )}
+
+                            {/* Modal Footer */}
+                            <div className={`${showPrograms ? 'mt-8' : ''} p-6 border border-slate-200 bg-white rounded-[2rem] shadow-sm flex flex-col lg:flex-row lg:items-center justify-between gap-6`}>
+
+                            {/* Points Summary & Viva Input */}
+                            <div className="flex flex-wrap items-center gap-6">
+                                {(() => {
+                                    let t1 = 0;
+                                    selectedReport.programs.forEach(p => {
+                                        const m = marks[selectedReport._id]?.[p._id] || 0;
+                                        if (p.tier !== 'Tier 2') t1 += m;
+                                    });
+                                    const t2 = tier2PointsGlobal[selectedReport._id] || 0;
+                                    const t2Capped = Math.min(t2, 10);
+                                    const programTotal = t1 + t2Capped;
+
+                                    const scaledProgram = (programTotal / 110) * 50;
+                                    const scaledZehnuth = (selectedReport.zehnuthPoints || 0) * 0.25;
+                                    
+                                    const currentRawViva = vivaPoints[selectedReport._id] || 0;
+                                    const calcViva = (currentRawViva / 650) * 100;
+                                    const scaledViva = calcViva * 0.25;
+
+                                    const grandTotal = (scaledProgram + scaledZehnuth + scaledViva).toFixed(2);
+
+                                    return (
+                                        <>
+                                            <div className="flex gap-4">
+                                                <div className="space-y-1 border-r border-slate-200 pr-4">
+                                                    <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Tier 1</p>
+                                                    <p className="text-lg font-black text-blue-600">{t1}</p>
+                                                </div>
+                                                <div className="space-y-1 border-r border-slate-200 pr-4">
+                                                    <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Tier 2</p>
+                                                    <p className="text-lg font-black text-indigo-500">{t2Capped}</p>
+                                                </div>
+                                                <div className="space-y-1">
+                                                    <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Total</p>
+                                                    <p className="text-xl font-black text-indigo-600">{programTotal}</p>
+                                                </div>
+                                            </div>
+                                            
+                                            <div className="space-y-1">
+                                                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Tier 2 Points</p>
+                                                <input
+                                                    type="number"
+                                                    min="0"
+                                                    max="10"
+                                                    value={tier2PointsGlobal[selectedReport._id] || 0}
+                                                    onChange={(e) => {
+                                                        let val = Number(e.target.value);
+                                                        if (val < 0) val = 0;
+                                                        if (val > 10) val = 10;
+                                                        setTier2PointsGlobal(prev => ({ ...prev, [selectedReport._id]: val }));
+                                                    }}
+                                                    className="w-20 bg-white border border-slate-200 rounded-xl px-3 py-1.5 text-xl font-black text-indigo-500 outline-none focus:border-indigo-500 transition-colors"
+                                                />
+                                            </div>
+                                            
+                                            <div className="space-y-1">
+                                                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Zehnuth Points</p>
+                                                <p className="text-xl font-black text-amber-600 flex items-baseline gap-1">
+                                                    {selectedReport.zehnuthPoints || 0}
+                                                    <span className="text-[10px] font-bold text-slate-400">({selectedReport.originalZehnuthPoints || 0} M-Points)</span>
+                                                </p>
+                                            </div>
+                                            
+                                            <div className="space-y-1 border-r border-slate-200 pr-4">
+                                                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Daily Viva Points</p>
+                                                <div className="flex items-center gap-2">
+                                                    <input
+                                                        type="number"
+                                                        value={currentRawViva}
+                                                        onChange={(e) => setVivaPoints(prev => ({ ...prev, [selectedReport._id]: Number(e.target.value) }))}
+                                                        className="w-20 bg-white border border-slate-200 rounded-xl px-3 py-1.5 text-xl font-black text-emerald-600 outline-none focus:border-indigo-500 transition-colors"
+                                                    />
+                                                    <span className="text-[12px] font-bold text-emerald-600 bg-emerald-50 px-2 py-1 rounded-lg">
+                                                        {calcViva.toFixed(2)} pts
+                                                    </span>
+                                                </div>
+                                            </div>
+
+                                            <div className="space-y-1 bg-slate-900 px-6 py-2.5 rounded-2xl shadow-lg border border-slate-800">
+                                                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Grand Total</p>
+                                                <p className="text-2xl font-black text-white flex items-baseline gap-1 justify-center">
+                                                    {grandTotal}
+                                                    <span className="text-xs font-bold text-slate-400">/ 100</span>
+                                                </p>
+                                            </div>
+                                        </>
+                                    );
+                                })()}
+                            </div>
+
+                            </div>
+                        </div>
+                        
+                        {/* Fixed Actions Footer */}
+                        <div className="p-4 sm:p-6 border-t border-slate-100 bg-white flex justify-center shrink-0">
+                            <button
+                                onClick={() => handleSaveMarks(selectedReport)}
+                                disabled={submittingId === selectedReport._id}
+                                className="px-8 py-4 bg-slate-900 text-white rounded-[1.5rem] text-[11px] font-black uppercase tracking-[0.2em] hover:bg-emerald-600 active:scale-95 transition-all shadow-xl shadow-slate-200 flex items-center gap-2 disabled:opacity-50"
+                            >
+                                {submittingId === selectedReport._id ? (
+                                    <><Loader2 className="w-4 h-4 animate-spin" /> Saving...</>
+                                ) : (
+                                    <><CheckCircle2 className="w-4 h-4" /> Approve & Save Marks</>
+                                )}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
